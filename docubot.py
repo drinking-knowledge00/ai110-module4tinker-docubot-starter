@@ -9,6 +9,24 @@ Core DocuBot class responsible for:
 
 import os
 import glob
+import re
+
+# Common function words that appear everywhere and carry no signal for matching
+STOPWORDS = {
+    "a", "an", "the", "is", "are", "was", "were", "be", "been", "being",
+    "have", "has", "had", "do", "does", "did", "will", "would", "could",
+    "should", "may", "might", "shall", "can", "need", "dare", "ought",
+    "used", "to", "of", "in", "on", "at", "by", "for", "with", "about",
+    "from", "into", "through", "during", "before", "after", "above",
+    "below", "between", "and", "or", "but", "if", "so", "yet", "both",
+    "not", "no", "nor", "as", "up", "out", "any", "these", "those",
+    "this", "that", "it", "its", "i", "you", "he", "she", "we", "they",
+    "me", "him", "her", "us", "them", "my", "your", "his", "our", "their",
+    "what", "which", "who", "whom", "when", "where", "why", "how",
+    "there", "here", "all", "each", "every", "some", "such", "than",
+    "then", "also", "more", "most", "doc", "docs", "document", "documents",
+    "mention", "mentions", "mentioned",
+}
 
 class DocuBot:
     def __init__(self, docs_folder="docs", llm_client=None):
@@ -50,21 +68,22 @@ class DocuBot:
 
     def build_index(self, documents):
         """
-        TODO (Phase 1):
-        Build a tiny inverted index mapping lowercase words to the documents
-        they appear in.
+        Build an inverted index mapping lowercase words to the document
+        filenames that contain them.
 
-        Example structure:
+        Structure:
         {
             "token": ["AUTH.md", "API_REFERENCE.md"],
             "database": ["DATABASE.md"]
         }
-
-        Keep this simple: split on whitespace, lowercase tokens,
-        ignore punctuation if needed.
         """
         index = {}
-        # TODO: implement simple indexing
+        for filename, text in documents:
+            words = set(re.findall(r'[a-z]+', text.lower())) - STOPWORDS
+            for word in words:
+                if word not in index:
+                    index[word] = []
+                index[word].append(filename)
         return index
 
     # -----------------------------------------------------------
@@ -73,27 +92,42 @@ class DocuBot:
 
     def score_document(self, query, text):
         """
-        TODO (Phase 1):
-        Return a simple relevance score for how well the text matches the query.
-
-        Suggested baseline:
-        - Convert query into lowercase words
-        - Count how many appear in the text
-        - Return the count as the score
+        Return a relevance score: total count of query word occurrences in text.
+        More occurrences = higher score, giving longer matching passages a boost.
         """
-        # TODO: implement scoring
-        return 0
+        query_words = [w for w in re.findall(r'[a-z]+', query.lower()) if w not in STOPWORDS]
+        text_lower = text.lower()
+        return sum(len(re.findall(r'\b' + re.escape(word) + r'\b', text_lower)) for word in query_words)
 
     def retrieve(self, query, top_k=3):
         """
-        TODO (Phase 1):
-        Use the index and scoring function to select top_k relevant document snippets.
+        Split each document into paragraphs, score each paragraph against
+        the query, and return the top_k highest-scoring (filename, paragraph)
+        pairs sorted by score descending.
 
-        Return a list of (filename, text) sorted by score descending.
+        Returns an empty list when no paragraph scores above zero — this
+        triggers the "I do not know" guardrail in both answer modes.
         """
-        results = []
-        # TODO: implement retrieval logic
-        return results[:top_k]
+        # Use the index to find candidate filenames containing any query word
+        query_words = set(re.findall(r'[a-z]+', query.lower())) - STOPWORDS
+        candidate_files = set()
+        for word in query_words:
+            for filename in self.index.get(word, []):
+                candidate_files.add(filename)
+
+        # Score at paragraph level so snippets are focused, not whole files
+        scored = []
+        for filename, text in self.documents:
+            if filename not in candidate_files:
+                continue
+            paragraphs = [p.strip() for p in text.split('\n\n') if p.strip()]
+            for para in paragraphs:
+                score = self.score_document(query, para)
+                if score > 0:
+                    scored.append((score, filename, para))
+
+        scored.sort(key=lambda x: x[0], reverse=True)
+        return [(filename, para) for _, filename, para in scored[:top_k]]
 
     # -----------------------------------------------------------
     # Answering Modes
